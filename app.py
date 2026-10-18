@@ -1,0 +1,148 @@
+"""ReceiptCheck: connect Excel once, upload receipts, let local AI do the entry."""
+
+import os
+import time
+
+import streamlit as st
+
+from receiptcheck import (
+    DATA, DEFAULT_MODEL, ROOT, ReceiptError, connect_workbook, extract_receipt,
+    model_ready, prepare_image, read_receipts, receipt_id, record_receipt, saved_connection,
+)
+
+st.set_page_config(page_title="ReceiptCheck · Receipts to Excel", page_icon="🧾", layout="wide")
+st.markdown("""<style>
+.block-container {max-width: 1120px; padding-top: 2.8rem;}
+h1 {letter-spacing: -.045em; font-size: 3.3rem !important;}
+[data-testid="stMetric"] {background: #edf1eb; border-radius: 12px; padding: 16px;}
+[data-testid="stFileUploader"] {border: 1px dashed #9bb7a7; border-radius: 14px; padding: 12px;}
+</style>""", unsafe_allow_html=True)
+
+DATA.mkdir(exist_ok=True)
+model = os.environ.get("RECEIPTCHECK_MODEL", DEFAULT_MODEL)
+workbook = saved_connection()
+
+with st.sidebar:
+    st.markdown("### 🧾 ReceiptCheck")
+    st.caption("Your receipts. Your laptop. Your spreadsheet.")
+    st.divider()
+    st.markdown("**Excel connection**")
+    if workbook:
+        st.success("Workbook connected")
+        st.caption(str(workbook))
+    else:
+        st.info("Connect a workbook to get started.")
+    with st.expander("Change workbook" if workbook else "Connect your workbook", expanded=not workbook):
+        with st.form("connection"):
+            location = st.text_input("Workbook path on this laptop", value=str(workbook or DATA / "receipts.xlsx"))
+            st.caption("Choose a new file or an existing plain .xlsx workbook. We add Receipts and Line Items tabs. Close Excel while uploading.")
+            if st.form_submit_button("Connect workbook", type="primary", width="stretch"):
+                try:
+                    connect_workbook(location)
+                    st.rerun()
+                except (ReceiptError, OSError) as exc:
+                    st.error(str(exc))
+    st.divider()
+    ready, readiness_message = model_ready(model)
+    if ready:
+        st.caption("● Local AI ready · no API key")
+    else:
+        st.warning(readiness_message)
+        if st.button("Check again"):
+            st.rerun()
+    with st.expander("About your data"):
+        st.caption("Receipt processing runs locally through Ollama. Receipt images and connection settings are saved in this project's data folder. No receipt is sent to a paid or cloud AI API.")
+        st.caption("Recorded means the required fields are present and arithmetic checks passed. It does not guarantee that every character was read correctly.")
+
+st.caption("LOCAL AI  /  AUTOMATIC BOOKKEEPING ENTRY")
+st.title("Receipts in. Spreadsheet updated.")
+st.markdown("Connect Excel once. Drop in a receipt. We read the details, check the numbers, and add the entry automatically.")
+
+if not workbook:
+    st.info("Start with **Connect your workbook** in the sidebar. A new workbook can be created for you.")
+
+uploaded = st.file_uploader(
+    "Upload receipt photos", type=["jpg", "jpeg", "png", "webp"],
+    accept_multiple_files=True, disabled=not (workbook and ready),
+    help="Printed receipts work best. Up to 10 MB per image. Extraction starts automatically after upload.",
+)
+
+demo = st.button("Try the included sample receipt", disabled=not (workbook and ready))
+pending = [(file.name, file.getvalue()) for file in uploaded or []]
+if demo:
+    pending.append(("sample-receipt.png", (ROOT / "examples" / "sample-receipt.png").read_bytes()))
+
+if "results" not in st.session_state:
+    st.session_state.results = {}
+
+if workbook and pending:
+    try:
+        known_ids = {row["Receipt ID"] for row in read_receipts(workbook)}
+    except ReceiptError as exc:
+        st.error(str(exc))
+        known_ids = None
+    if known_ids is not None:
+        for filename, content in pending:
+            key = f"{workbook}:{receipt_id(content)}"
+            if key in st.session_state.results:
+                continue
+            if receipt_id(content) in known_ids:
+                st.session_state.results[key] = {"filename": filename, "status": "Duplicate skipped", "notes": []}
+                continue
+            started = time.monotonic()
+            with st.status(f"Reading {filename}…", expanded=True) as progress:
+                st.write("Reading the receipt with local AI. The first image can take a few minutes on a CPU.")
+                try:
+                    image = prepare_image(content)
+                    receipt = extract_receipt(image, model)
+                    _, status, notes = record_receipt(workbook, receipt, content, filename, image)
+                    known_ids.add(receipt_id(content))
+                    st.session_state.results[key] = {"filename": filename, "status": status, "notes": notes,
+                                                     "seconds": round(time.monotonic() - started, 1)}
+                    progress.update(label=f"{filename} · {status}", state="complete", expanded=False)
+                except (ReceiptError, OSError) as exc:
+                    st.session_state.results[key] = {"filename": filename, "status": "Not saved", "notes": [str(exc)]}
+                    progress.update(label=f"{filename} · Not saved", state="error", expanded=False)
+
+results = [result for key, result in st.session_state.results.items() if workbook and key.startswith(f"{workbook}:")]
+for result in results:
+    label = f"{result['filename']} — {result['status']}"
+    if result["status"] == "Not saved":
+        st.error(label + ": " + " ".join(result["notes"]))
+    elif result["status"] == "Needs review":
+        st.warning(label + ". Saved with review notes: " + " ".join(result["notes"]))
+    elif result["status"] == "Duplicate skipped":
+        st.info(label + ". This exact image is already in the workbook.")
+    else:
+        st.success(label + f" · Excel updated in {result.get('seconds', 0)}s")
+
+if any(result["status"] == "Not saved" for result in results):
+    if st.button("Retry failed uploads"):
+        st.session_state.results = {key: result for key, result in st.session_state.results.items()
+                                    if result["status"] != "Not saved"}
+        st.rerun()
+
+st.divider()
+st.subheader("Your receipt ledger")
+if workbook:
+    try:
+        records = read_receipts(workbook)
+        left, middle, right = st.columns(3)
+        left.metric("Receipts saved", len(records))
+        middle.metric("Checks passed", sum(row["Status"] == "Recorded" for row in records))
+        right.metric("Needs review", sum(row["Status"] == "Needs review" for row in records))
+        if records:
+            columns = ["Source file", "Vendor", "Date", "Currency", "Total", "Status", "Review notes"]
+            st.dataframe([{column: row[column] for column in columns} for row in reversed(records)],
+                         hide_index=True, width="stretch")
+            st.download_button("Download workbook snapshot", workbook.read_bytes(), file_name=workbook.name,
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.caption("The connected file is already updated. This download is optional. Check the Line Items tab for item details.")
+        else:
+            st.caption("Your first upload will appear here automatically.")
+    except (ReceiptError, OSError) as exc:
+        st.error(str(exc))
+else:
+    st.caption("Connect a workbook to see your entries here.")
+
+st.caption("Printed receipt photos · Local open-weight vision model · MIT-licensed app")
