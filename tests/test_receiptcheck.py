@@ -28,8 +28,9 @@ class ReceiptTests(unittest.TestCase):
     def test_extraction_schema_validation_and_connection_errors(self):
         response = Mock()
         response.json.return_value = {"message": {"content": sample().model_dump_json()}}
-        with patch.object(rc.requests, "post", return_value=response):
-            self.assertEqual(rc.extract_receipt(b"image").total, 660)
+        with patch.object(rc.requests, "post", return_value=response) as post:
+            self.assertEqual(rc.extract_receipt(b"image", "custom:latest").total, 660)
+            self.assertEqual(post.call_args.kwargs["json"]["model"], "custom:latest")
             response.json.return_value = {"message": {"content": '{"vendor": "invented"}'}}
             with self.assertRaises(rc.ReceiptError):
                 rc.extract_receipt(b"image")

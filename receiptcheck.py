@@ -21,9 +21,10 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 import requests
 
+from model_settings import DEFAULT_MODEL
+
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
-DEFAULT_MODEL = "qwen3-vl:2b"
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 WRITE_LOCK = threading.Lock()
 CENT = Decimal("0.01")
@@ -86,16 +87,30 @@ def prepare_image(content: bytes) -> bytes:
         raise ReceiptError("This file could not be read as a receipt image.") from exc
 
 
-def model_ready(model: str = DEFAULT_MODEL) -> tuple[bool, str]:
+def installed_models() -> list[str]:
     try:
         response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
         response.raise_for_status()
-        models = [entry["name"] for entry in response.json().get("models", [])]
-        if model not in models:
-            return False, f"Download the vision model first: ollama pull {model}"
+        return sorted({entry["name"] for entry in response.json()["models"]
+                       if isinstance(entry.get("name"), str)})
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ReceiptError("Start Ollama, then click Refresh models. See the setup instructions in README.md.") from exc
+
+
+def model_ready(model: str = DEFAULT_MODEL) -> tuple[bool, str]:
+    try:
+        response = requests.post(f"{OLLAMA_URL}/api/show", json={"model": model}, timeout=5)
+        if response.status_code == 404:
+            return False, f"Model not installed. Run ollama pull {model}, then click Refresh models."
+        response.raise_for_status()
+        details = response.json()
+        if details.get("remote_host") or details.get("remote_model"):
+            return False, "Choose a local model. Cloud models send receipt images off this laptop."
+        if "vision" not in (details.get("capabilities") or []):
+            return False, "This model cannot read receipt images. Choose a vision model and use an up-to-date Ollama."
         return True, "Local vision model ready"
-    except (requests.RequestException, ValueError, KeyError):
-        return False, "Start Ollama, then refresh this page. See the setup instructions in README.md."
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return False, "Could not check this model. Start Ollama and click Refresh models."
 
 
 PROMPT = """Read this receipt image and extract only what is actually printed.

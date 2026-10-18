@@ -6,7 +6,7 @@ root = Path(__file__).resolve().parents[1]
 output = root / "dist" / "ReceiptCheck-source.zip"
 output.parent.mkdir(exist_ok=True)
 files = [root / name for name in [
-    "app.py", "receiptcheck.py", "launcher.py", "run.sh", "run.bat", "requirements.txt",
+    "app.py", "receiptcheck.py", "model_settings.py", "launcher.py", "run.sh", "run.bat", "requirements.txt",
     "README.md", "LICENSE", ".gitignore", ".gitattributes",
 ]]
 for directory, pattern in [("tests", "*.py"), ("scripts", "*.py"), ("examples", "*.png"),

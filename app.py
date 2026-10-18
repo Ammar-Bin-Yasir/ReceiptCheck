@@ -1,14 +1,19 @@
 """ReceiptCheck: connect Excel once, upload receipts, let local AI do the entry."""
 
-import os
 import time
 
 import streamlit as st
 
 from receiptcheck import (
-    DATA, DEFAULT_MODEL, ROOT, ReceiptError, connect_workbook, extract_receipt,
-    model_ready, prepare_image, read_receipts, receipt_id, record_receipt, saved_connection,
+    DATA, ROOT, OLLAMA_URL, ReceiptError, connect_workbook, extract_receipt,
+    installed_models, model_ready, prepare_image, read_receipts, receipt_id, record_receipt, saved_connection,
 )
+from model_settings import preferred_model, save_model
+
+
+@st.cache_data(ttl=30, max_entries=8, show_spinner=False)
+def discover_models(server):
+    return installed_models()
 
 st.set_page_config(page_title="ReceiptCheck · Receipts to Excel", page_icon="🧾", layout="wide")
 st.markdown("""<style>
@@ -19,7 +24,8 @@ h1 {letter-spacing: -.045em; font-size: 3.3rem !important;}
 </style>""", unsafe_allow_html=True)
 
 DATA.mkdir(exist_ok=True)
-model = os.environ.get("RECEIPTCHECK_MODEL", DEFAULT_MODEL)
+initial_model = preferred_model(DATA)
+st.session_state.setdefault("receipt_model", initial_model)
 workbook = saved_connection()
 
 with st.sidebar:
@@ -43,13 +49,32 @@ with st.sidebar:
                 except (ReceiptError, OSError) as exc:
                     st.error(str(exc))
     st.divider()
-    ready, readiness_message = model_ready(model)
+    st.markdown("**AI model**")
+    if st.button("Refresh models"):
+        discover_models.clear()
+    try:
+        models = discover_models(OLLAMA_URL)
+        discovery_error = None
+    except ReceiptError as exc:
+        models, discovery_error = [], str(exc)
+    # Retain a removed/offline selection so it is never silently replaced.
+    options = sorted(set(models + [st.session_state.receipt_model]))
+    model = st.selectbox("Ollama model", options, key="receipt_model",
+                         help="Choose an installed vision model. Your choice is remembered on this laptop.")
+    ready, readiness_message = (False, discovery_error) if discovery_error else model_ready(model)
+    if ready and model != initial_model:
+        try:
+            save_model(DATA, model)
+        except OSError:
+            st.warning("Using this model for this session, but could not save the preference. Check the data folder permissions.")
     if ready:
-        st.caption("● Local AI ready · no API key")
+        st.caption(f"● Ready · {model}")
     else:
         st.warning(readiness_message)
-        if st.button("Check again"):
-            st.rerun()
+    with st.expander("Add another model"):
+        st.caption("Install a vision model in a terminal, then click Refresh models and select it above. For example:")
+        st.code("ollama pull qwen3-vl:4b", language="bash")
+        st.caption("Larger models need more memory. Custom models imported into Ollama also appear here. Text-only and cloud models cannot be used.")
     with st.expander("About your data"):
         st.caption("Receipt processing runs locally through Ollama. Receipt images and connection settings are saved in this project's data folder. No receipt is sent to a paid or cloud AI API.")
         st.caption("Recorded means the required fields are present and arithmetic checks passed. It does not guarantee that every character was read correctly.")
@@ -75,7 +100,7 @@ if demo:
 if "results" not in st.session_state:
     st.session_state.results = {}
 
-if workbook and pending:
+if workbook and ready and pending:
     try:
         known_ids = {row["Receipt ID"] for row in read_receipts(workbook)}
     except ReceiptError as exc:

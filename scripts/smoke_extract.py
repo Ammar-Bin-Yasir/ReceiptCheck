@@ -7,10 +7,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import receiptcheck as rc
+from model_settings import preferred_model
 
 content = (rc.ROOT / "examples" / "sample-receipt.png").read_bytes()
 started = time.monotonic()
-receipt = rc.extract_receipt(rc.prepare_image(content))
+model = preferred_model(rc.DATA)
+print(f"Testing model: {model}")
+receipt = rc.extract_receipt(rc.prepare_image(content), model)
 print(receipt.model_dump_json(indent=2))
 print(f"Extraction time: {time.monotonic() - started:.1f}s")
 assert receipt.vendor and "LAHORE" in receipt.vendor.upper(), "Vendor was not read correctly"

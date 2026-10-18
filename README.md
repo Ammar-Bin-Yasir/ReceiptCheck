@@ -31,7 +31,7 @@ On Ubuntu/Debian, install `python3-venv` if Python reports that `ensurepip` is u
 ## After upload
 
 1. The app validates and rotates the image, then sends it to the local Ollama server.
-2. Qwen3-VL extracts a constrained JSON receipt structure. Missing or unreadable values remain blank.
+2. The selected vision model extracts a constrained JSON receipt structure. Missing or unreadable values remain blank.
 3. Python checks the structure and line calculations, subtotal, tax, discount and total using decimal arithmetic.
 4. Receipt and item rows are saved together, with review status and notes. The existing workbook is backed up before replacement.
 5. The dashboard shows the saved entries. Downloading a workbook snapshot is optional; the selected file is already updated.
@@ -57,6 +57,7 @@ No confirmation is required for normal uploads. Entries that fail checks are sav
 The browser, app, Ollama and workbook run on the same laptop. By default the app listens only on `127.0.0.1`; this is not a public hosted service.
 
 - `data/connection.json`: saved workbook location.
+- `data/model.json`: saved model choice, shared by the app and launcher.
 - `data/receipts/`: normalized receipt images for traceability.
 - Workbook: the path chosen by the user.
 - `.runtime/ollama.log`: diagnostics when the launcher starts Ollama.
@@ -70,7 +71,19 @@ Default: [`qwen3-vl:2b`](https://ollama.com/library/qwen3-vl:2b), a quantized op
 
 A GPU is not strictly required: Ollama can use the CPU, but image processing can be slow. A supported GPU and sufficient RAM/VRAM improve usability. Test representative receipts on the actual demo laptop. The app allows up to ten minutes per extraction before reporting a timeout.
 
-For a larger model on a capable Windows laptop:
+### Choose your own model
+
+Use **AI model → Ollama model** in the sidebar to choose an installed model. The app checks that it supports images before enabling uploads. Valid choices are saved automatically and reused after restarting, including by the launcher. Custom vision models imported into Ollama are supported; text-only and Ollama cloud models are rejected.
+
+To add a model, install it in a terminal on the laptop running the app, then click **Refresh models** and select it. For example, for a larger model on a capable laptop:
+
+```text
+ollama pull qwen3-vl:4b
+```
+
+The dropdown lists installed models; compatibility is checked when selected. An unavailable or incompatible choice disables processing and does not replace your saved valid preference. Switching models applies to subsequent extractions; it does not reprocess receipts already saved. Extraction accuracy and memory needs vary by model. Try the included sample after switching.
+
+For the **first launch**, before a preference is saved, you can also set the initial model on Windows:
 
 ```bat
 set RECEIPTCHECK_MODEL=qwen3-vl:4b
@@ -83,7 +96,7 @@ Linux:
 RECEIPTCHECK_MODEL=qwen3-vl:4b bash run.sh
 ```
 
-The launcher downloads the selected model if missing. `OLLAMA_URL` can select an existing server; a remote URL sends receipt images there and is no longer fully local.
+The launcher downloads the saved model (or the environment/default model if no choice is saved) if missing. A saved sidebar choice takes precedence over `RECEIPTCHECK_MODEL`. `OLLAMA_URL` can select an existing server; a remote URL sends receipt images there and is no longer fully local.
 
 ## Tests
 
@@ -101,9 +114,9 @@ Linux:
 .venv/bin/python scripts/smoke_extract.py
 ```
 
-Unit and Streamlit workflow tests need no GPU or Ollama; UI tests explicitly mock extraction. They cover workbook preservation, failed saves, arithmetic checks, literal text, duplicate detection, persistent connection and startup behavior. GitHub Actions is configured for Windows and Linux with Python 3.11 and 3.12.
+Unit and Streamlit workflow tests need no GPU or Ollama; UI tests explicitly mock extraction. They cover workbook preservation, failed saves, arithmetic checks, literal text, duplicate detection, persistent connection, model selection and startup behavior. GitHub Actions is configured for Windows and Linux with Python 3.11 and 3.12.
 
-`smoke_extract.py` separately runs the **real model** on the sample and verifies vendor, date, currency, total, line amounts, Excel output and duplicate prevention. Run it with Ollama active. It uses a temporary workbook and leaves the connected workbook alone. A failed assertion means extraction did not match the sample; it is not replaced with fake data.
+`smoke_extract.py` separately runs the **real model** on the sample and verifies vendor, date, currency, total, line amounts, Excel output and duplicate prevention. It uses your saved model choice, falling back to the environment/default model. Run it with Ollama active. It uses a temporary workbook and leaves the connected workbook alone. A failed assertion means extraction did not match the sample; it is not replaced with fake data.
 
 Suggested demo: connect a workbook, upload the sample, show both Excel tabs, then upload the identical image again. Follow with a real printed receipt. A teammate can compare the extracted fields with the originals.
 

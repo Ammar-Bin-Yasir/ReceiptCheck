@@ -11,9 +11,11 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 import venv
 
+from model_settings import preferred_model
+
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".runtime"
-MODEL = os.environ.get("RECEIPTCHECK_MODEL", "qwen3-vl:2b")
+MODEL = preferred_model(ROOT / "data")
 URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 
 
