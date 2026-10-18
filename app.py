@@ -116,18 +116,36 @@ if workbook and ready and pending:
                 continue
             started = time.monotonic()
             with st.status(f"Reading {filename}…", expanded=True) as progress:
-                st.write("Reading the receipt with local AI. The first image can take a few minutes on a CPU.")
+                stage_bar = st.progress(0, text="Step 1 of 4 · Preparing image")
+                st.caption("Progress shows completed steps, not time remaining. Reading is usually the longest step.")
+                activity = st.empty()
+
+                def show_activity(stage, updates):
+                    if stage == "validating":
+                        stage_bar.progress(50, text="Step 3 of 4 · Checking extracted details")
+                        activity.caption("Model response received. Checking the receipt structure and amounts…")
+                    elif updates == 1 or updates % 10 == 0:
+                        activity.caption(f"Model is responding · {updates} response updates received")
+
                 try:
                     image = prepare_image(content)
-                    receipt = extract_receipt(image, model)
+                    stage_bar.progress(25, text="Step 2 of 4 · Reading receipt with local AI")
+                    activity.caption("Waiting for the first model response. Loading the model and reading the image can take several minutes on a CPU.")
+                    with st.spinner(f"Processing with {model}", show_time=True):
+                        receipt = extract_receipt(image, model, on_progress=show_activity)
+                    stage_bar.progress(75, text="Step 4 of 4 · Saving to Excel")
+                    activity.caption("Checking line calculations and updating your workbook…")
                     _, status, notes = record_receipt(workbook, receipt, content, filename, image)
                     known_ids.add(receipt_id(content))
                     st.session_state.results[key] = {"filename": filename, "status": status, "notes": notes,
                                                      "seconds": round(time.monotonic() - started, 1)}
+                    stage_bar.progress(100, text="Complete · Excel updated")
+                    activity.caption(f"Finished in {time.monotonic() - started:.1f}s")
                     progress.update(label=f"{filename} · {status}", state="complete", expanded=False)
                 except (ReceiptError, OSError) as exc:
                     st.session_state.results[key] = {"filename": filename, "status": "Not saved", "notes": [str(exc)]}
-                    progress.update(label=f"{filename} · Not saved", state="error", expanded=False)
+                    activity.caption(f"Stopped after {time.monotonic() - started:.1f}s · No entry saved")
+                    progress.update(label=f"{filename} · Not saved", state="error", expanded=True)
 
 results = [result for key, result in st.session_state.results.items() if workbook and key.startswith(f"{workbook}:")]
 for result in results:

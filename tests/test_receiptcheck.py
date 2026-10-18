@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -27,19 +28,63 @@ def sample(**changes):
 class ReceiptTests(unittest.TestCase):
     def test_extraction_schema_validation_and_connection_errors(self):
         response = Mock()
-        response.json.return_value = {"message": {"content": sample().model_dump_json()}}
+        response.iter_lines.return_value = [json.dumps({"message": {"content": sample().model_dump_json()}, "done": True}).encode()]
         with patch.object(rc.requests, "post", return_value=response) as post:
             self.assertEqual(rc.extract_receipt(b"image", "custom:latest").total, 660)
             self.assertEqual(post.call_args.kwargs["json"]["model"], "custom:latest")
-            response.json.return_value = {"message": {"content": '{"vendor": "invented"}'}}
+            self.assertTrue(post.call_args.kwargs["stream"])
+            response.iter_lines.return_value = [b'{"message":{"content":"{}"},"done":true}']
             with self.assertRaises(rc.ReceiptError):
                 rc.extract_receipt(b"image")
-            response.json.return_value = {"done_reason": "length", "message": {"content": "{}"}}
+            response.iter_lines.return_value = [b'{"done_reason":"length","done":true}']
             with self.assertRaisesRegex(rc.ReceiptError, "too long"):
                 rc.extract_receipt(b"image")
+        self.assertEqual(response.close.call_count, 3)
         with patch.object(rc.requests, "post", side_effect=requests.Timeout):
             with self.assertRaisesRegex(rc.ReceiptError, "timed out"):
                 rc.extract_receipt(b"image")
+
+    def test_stream_reports_activity_before_completion_and_validates_full_result(self):
+        response = Mock()
+        events = []
+        text = sample().model_dump_json()
+
+        def stream():
+            yield b""
+            yield json.dumps({"message": {"thinking": "private reasoning"}, "done": False}).encode()
+            self.assertEqual(events, [("receiving", 1)])
+            yield json.dumps({"message": {"content": text[:80]}, "done": False}).encode()
+            self.assertEqual(events[-1], ("receiving", 2))
+            yield json.dumps({"message": {"content": text[80:]}, "done": True}).encode()
+
+        response.iter_lines.side_effect = stream
+        with patch.object(rc.requests, "post", return_value=response):
+            result = rc.extract_receipt(b"image", on_progress=lambda stage, count: events.append((stage, count)))
+        self.assertEqual(result.total, 660)
+        self.assertEqual(events[-1], ("validating", 3))
+        response.close.assert_called_once()
+
+    def test_broken_streams_never_return_a_partial_receipt(self):
+        cases = [
+            [json.dumps({"message": {"content": sample().model_dump_json()}, "done": False}).encode()],
+            [b'{"error":"out of memory"}'],
+            [b'not json'],
+            [b'{"message":null,"done":false}'],
+        ]
+        for chunks in cases:
+            with self.subTest(chunks=chunks):
+                response = Mock()
+                response.iter_lines.return_value = chunks
+                with patch.object(rc.requests, "post", return_value=response):
+                    with self.assertRaises(rc.ReceiptError):
+                        rc.extract_receipt(b"image")
+                response.close.assert_called_once()
+        response = Mock()
+        response.iter_lines.side_effect = requests.ConnectionError("connection lost")
+        with patch.object(rc.requests, "post", return_value=response):
+            with self.assertRaises(rc.ReceiptError):
+                rc.extract_receipt(b"image")
+        response.close.assert_called_once()
 
     def test_arithmetic_and_missing_fields(self):
         self.assertEqual(rc.review_reasons(sample()), [])

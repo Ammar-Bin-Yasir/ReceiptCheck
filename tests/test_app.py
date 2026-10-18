@@ -20,10 +20,16 @@ class AppTests(unittest.TestCase):
         self.addCleanup(discovery.stop)
 
     def test_connect_once_sample_autosaves_and_duplicate_is_skipped(self):
+        def extract(image, model, on_progress):
+            on_progress("receiving", 1)
+            on_progress("receiving", 10)
+            on_progress("validating", 10)
+            return sample()
+
         with tempfile.TemporaryDirectory(prefix="receipt check ") as temporary:
             with patch.object(rc, "DATA", Path(temporary) / "data"), \
                     patch.object(rc, "model_ready", return_value=(True, "Ready")), \
-                    patch.object(rc, "extract_receipt", return_value=sample()) as extraction:
+                    patch.object(rc, "extract_receipt", side_effect=extract) as extraction:
                 app = AppTest.from_file(str(rc.ROOT / "app.py"), default_timeout=15).run()
                 self.assertEqual(len(app.exception), 0)
                 next(button for button in app.button if button.label == "Connect workbook").click().run()
@@ -38,6 +44,8 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(len(rc.read_receipts(connected)), 1)
                 self.assertEqual(extraction.call_count, 1)
                 self.assertEqual(extraction.call_args.args[1], "my-receipt-model:latest")
+                self.assertEqual(app.progress[0].value, 100)
+                self.assertIn("Excel updated", app.progress[0].text)
                 fresh = AppTest.from_file(str(rc.ROOT / "app.py"), default_timeout=15).run()
                 self.assertEqual(fresh.selectbox(key="receipt_model").value, "my-receipt-model:latest")
                 next(button for button in fresh.button if button.label == "Try the included sample receipt").click().run()
@@ -45,6 +53,23 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(len(rc.read_receipts(connected)), 1)
                 self.assertEqual(extraction.call_count, 1)
                 self.assertTrue(any("Duplicate skipped" in message.value for message in fresh.info))
+
+    def test_failed_extraction_keeps_progress_incomplete_and_workbook_empty(self):
+        def fail(image, model, on_progress):
+            on_progress("receiving", 1)
+            raise rc.ReceiptError("The model response was interrupted")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(rc, "DATA", Path(temporary) / "data"), \
+                    patch.object(rc, "model_ready", return_value=(True, "Ready")), \
+                    patch.object(rc, "extract_receipt", side_effect=fail):
+                app = AppTest.from_file(str(rc.ROOT / "app.py"), default_timeout=15).run()
+                next(b for b in app.button if b.label == "Connect workbook").click().run()
+                next(b for b in app.button if b.label == "Try the included sample receipt").click().run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.progress[0].value, 25)
+                self.assertTrue(any("interrupted" in error.value for error in app.error))
+                self.assertEqual(rc.read_receipts(rc.saved_connection()), [])
 
     def test_unavailable_model_shows_setup_message(self):
         with tempfile.TemporaryDirectory() as temporary:

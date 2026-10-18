@@ -38,6 +38,8 @@ On Ubuntu/Debian, install `python3-venv` if Python reports that `ensurepip` is u
 
 No confirmation is required for normal uploads. Entries that fail checks are saved as **Needs review**, with an explanation. Extraction or file-write failures are shown as **Not saved** and can be retried.
 
+During extraction, a progress bar tracks four steps: preparing the image, reading it, checking the result, and saving to Excel. An elapsed-time spinner stays visible while waiting for the model, and a live response-update count shows when the model starts responding. The bar measures completed steps, not estimated time: reading can take several minutes on a CPU, especially for the first receipt. Interrupted or invalid model responses are never saved, and failed operations do not show 100% completion.
+
 **Recorded means checks passed, not that extraction is guaranteed correct.** A model can misread multiple values consistently. Review the ledger before using it for accounting decisions. This app performs data entry, not complete bookkeeping or tax filing.
 
 ## Excel behavior

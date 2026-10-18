@@ -11,6 +11,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import threading
+import time
+from collections.abc import Callable
 from zipfile import BadZipFile
 from xml.etree.ElementTree import ParseError
 
@@ -130,7 +132,11 @@ items list, and explain in notes. Do not infer a quantity of one when it is not 
 """
 
 
-def extract_receipt(image: bytes, model: str = DEFAULT_MODEL) -> Receipt:
+def extract_receipt(image: bytes, model: str = DEFAULT_MODEL,
+                    on_progress: Callable[[str, int], None] | None = None) -> Receipt:
+    """Assemble streamed output, reporting activity without exposing partial receipt data."""
+    response = None
+    started = time.monotonic()
     try:
         response = requests.post(
             f"{OLLAMA_URL}/api/chat",
@@ -139,17 +145,44 @@ def extract_receipt(image: bytes, model: str = DEFAULT_MODEL) -> Receipt:
                 "messages": [{"role": "user", "content": PROMPT,
                               "images": [base64.b64encode(image).decode("ascii")]}],
                 "format": Receipt.model_json_schema(),
-                "stream": False,
+                "stream": True,
                 "keep_alive": "10m",
                 "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 1600},
             },
             timeout=(10, 600),
+            stream=True,
         )
         response.raise_for_status()
-        payload = response.json()
-        if payload.get("done_reason") == "length":
-            raise ReceiptError("The receipt was too long to extract completely. Try a shorter receipt.")
-        result = Receipt.model_validate_json(payload["message"]["content"])
+        parts = []
+        updates = 0
+        complete = False
+        for line in response.iter_lines():
+            if time.monotonic() - started > 600:
+                raise requests.Timeout()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if payload.get("error"):
+                raise ReceiptError("Ollama stopped while reading the receipt. Check the model and retry.")
+            message = payload.get("message", {})
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                raise ValueError("Invalid streamed content")
+            parts.append(content)
+            if content or message.get("thinking"):
+                updates += 1
+                if on_progress:
+                    on_progress("receiving", updates)
+            if payload.get("done") is True:
+                if payload.get("done_reason") == "length":
+                    raise ReceiptError("The receipt was too long to extract completely. Try a shorter receipt.")
+                complete = True
+                break
+        if not complete:
+            raise ReceiptError("The model response was interrupted. Nothing was saved; please retry.")
+        if on_progress:
+            on_progress("validating", updates)
+        result = Receipt.model_validate_json("".join(parts))
         numbers = [result.subtotal, result.tax, result.discount, result.total]
         for item in result.items:
             numbers.extend([item.quantity, item.unit_price, item.line_total])
@@ -161,8 +194,11 @@ def extract_receipt(image: bytes, model: str = DEFAULT_MODEL) -> Receipt:
         raise ReceiptError("Local extraction timed out. Try a smaller, clearer image and retry.") from exc
     except requests.RequestException as exc:
         raise ReceiptError("Could not extract this receipt. Check that Ollama and the vision model are running.") from exc
-    except (KeyError, ValueError, ValidationError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError, ValidationError) as exc:
         raise ReceiptError("The model returned incomplete or invalid receipt data. Try a clearer image.") from exc
+    finally:
+        if response is not None:
+            response.close()
 
 
 def review_reasons(receipt: Receipt) -> list[str]:
